@@ -1,0 +1,121 @@
+name: Build, Tag, and Push Image for Attest Sign Integration Test
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run in dry-run mode? Runs in dry-run mode by default."
+        required: false
+        type: string
+        default: 'true'
+
+env:
+  IMAGE: europe-north1-docker.pkg.dev/nais-management-7178/nais-verification/attest-sign
+
+jobs:
+  test:
+    name: Build container and push to GAR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Compute next release & deployment tags
+        id: tags
+        run: |
+          set -e
+
+          git fetch --tags --force
+
+          latest_tag=$(git tag -l 'v1.*' | sort -V | tail -n 1 || echo "")
+
+          echo "Latest tag: $latest_tag"
+
+          if [ -z "$latest_tag" ]; then
+            major=1
+            minor=0
+            patch=0
+          else
+            major=$(echo "$latest_tag" | cut -d'.' -f1 | sed 's/v//')
+            minor=$(echo "$latest_tag" | cut -d'.' -f2)
+            patch=$(echo "$latest_tag" | cut -d'.' -f3)
+          fi
+
+          new_patch=$((patch + 1))
+          new_tag="v${major}.${minor}.${new_patch}"
+
+          # Timestamp for deployment tag: YYYYMMDD-HHMMSS (UTC)
+          timestamp=$(date -u +"%Y%m%d-%H%M%S")
+          deploy_tag="${new_tag}-${timestamp}"
+
+          echo "Computed release tag: $new_tag"
+          echo "Computed deploy tag:  $deploy_tag"
+
+          echo "new_tag=${new_tag}" >> $GITHUB_OUTPUT
+          echo "deploy_tag=${deploy_tag}" >> $GITHUB_OUTPUT
+
+      - name: Create Release Tag
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -e
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          new_tag="${{ steps.tags.outputs.new_tag }}"
+
+          git tag -a "$new_tag" -m "Release $new_tag"
+
+          if [ "$DRY_RUN" = "false" ]; then
+            echo "Pushing release tag $new_tag"
+            git push origin "$new_tag"
+          else
+            echo "Dry run enabled, skipping tag push."
+          fi
+
+      - name: Push docker image to GAR
+        id: docker_build_push
+        uses: nais/docker-build-push@v0
+        with:
+          team: nais-verification
+          tag: ${{ steps.tags.outputs.deploy_tag }}
+          salsa: 'false'
+          docker_context: 'test'
+          project_id: 'nais-management-7178'
+          identity_provider: 'projects/718161667033/locations/global/workloadIdentityPools/dev-nais-identity-pool/providers/github-oidc-provider'
+
+      # We want to use the new changes
+      - name: Attest and sign test image
+        uses: './'
+        with:
+          image_ref: ${{ env.IMAGE }}@${{ steps.docker_build_push.outputs.digest }}
+
+      - name: Deploy attest-sign-integration-test to NAIS
+        uses: nais/deploy/actions/deploy@v2
+        env:
+          CLUSTER: dev
+          RESOURCE: test/nais.yml
+          DEPLOY_SERVER: deploy.dev-nais.cloud.nais.io:443
+          VAR: image=${{ env.IMAGE }}:${{ steps.tags.outputs.deploy_tag }}
+
+      - name: Update Floating v1 Tag
+        if: ${{ success() && inputs.dry_run == 'false' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch --tags --force
+          new_tag="${{ steps.tags.outputs.new_tag }}"
+          echo "Updating floating tag 'v1' → $new_tag"
+          git tag -f v1 "$new_tag"
+          git push origin -f v1
