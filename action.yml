@@ -33,7 +33,7 @@ runs:
         fi
       shell: 'bash'
     - name: 'Install cosign'
-      uses: 'sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62' # ratchet:sigstore/cosign-installer@v3
+      uses: 'sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad' # ratchet:sigstore/cosign-installer@v4.0.0
 
     # Check if the 'sbom' input is provided, and output a message if it is empty
     - name: "Check SBOM input"
@@ -58,7 +58,7 @@ runs:
         TRIVY_JAVA_DB_DIGEST=$(oras manifest fetch europe-north1-docker.pkg.dev/nais-io/remote-ghcr/aquasecurity/trivy-java-db:1 | jq -r '.layers[0].digest')
         echo "TRIVY_JAVA_DB_DIGEST=$TRIVY_JAVA_DB_DIGEST" >> $GITHUB_OUTPUT
 
-    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # ratchet:actions/cache@v4
+    - uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # ratchet:actions/cache@v4
       id: cache-trivy-java-db
       with:
         path: .trivy
@@ -79,7 +79,7 @@ runs:
         # Pin version to avoid unexpected issues with new releases
         version: "v0.67.2"
 
-      # See https://github.com/yogeshlonkar/trivy-cache-action?tab=readme-ov-file#trivy-cache-action-
+        # See https://github.com/yogeshlonkar/trivy-cache-action?tab=readme-ov-file#trivy-cache-action-
     - name: Fix .trivy permissions
       shell: 'bash'
       run: |
