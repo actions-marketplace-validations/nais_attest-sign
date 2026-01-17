@@ -34,6 +34,8 @@ runs:
       shell: 'bash'
     - name: 'Install cosign'
       uses: 'sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad' # ratchet:sigstore/cosign-installer@v4.0.0
+      with:
+        cosign-release: 'v3.0.4'
 
     # Check if the 'sbom' input is provided, and output a message if it is empty
     - name: "Check SBOM input"
@@ -77,7 +79,7 @@ runs:
         image-ref: "${{ inputs.image_ref }}"
         cache-dir: ".trivy"
         # Pin version to avoid unexpected issues with new releases
-        version: "v0.67.2"
+        version: "v0.68.2"
 
         # See https://github.com/yogeshlonkar/trivy-cache-action?tab=readme-ov-file#trivy-cache-action-
     - name: Fix .trivy permissions
@@ -89,16 +91,43 @@ runs:
           echo ".trivy directory does not exist, skipping chown."
         fi
 
+    - name: Debug SBOM summary
+      if: inputs.sbom == 'auto-generate-for-me-please.json'
+      shell: bash
+      run: |
+        echo "=== SBOM file info ==="
+        ls -lh auto-generate-for-me-please.json
+
+        echo "=== CycloneDX metadata ==="
+        jq '{bomFormat, specVersion, metadata: {timestamp, tools}}' auto-generate-for-me-please.json
+
+        echo "=== Component count ==="
+        jq '.components | length' auto-generate-for-me-please.json
+
+        echo "=== First 2 components ==="
+        jq '.components[:2]' auto-generate-for-me-please.json
+
     - name: 'Sign and attest image'
       env:
         IMAGE_REF: ${{ inputs.image_ref }}
-        SBOM: ${{ inputs.sbom }}
       shell: 'bash'
       run: |
         image_ref="${IMAGE_REF}"
-        sbom="${SBOM}"
+
+        if [ "${{ inputs.sbom }}" = "auto-generate-for-me-please.json" ]; then
+          sbom="auto-generate-for-me-please.json"
+        else
+          sbom="${{ inputs.sbom }}"
+        fi
+
+        echo "Using SBOM file: $sbom"
+        jq '.components | length' "$sbom"
+        
+        cosign version
         cosign sign --yes "${image_ref}"
         cosign attest --yes --predicate "$sbom" --type cyclonedx "${image_ref}"
+        
+
     - name: Set outputs
       env:
         SBOM: ${{ inputs.sbom }}
