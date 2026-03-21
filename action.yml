@@ -33,21 +33,25 @@ runs:
         fi
       shell: 'bash'
     - name: 'Install cosign'
-      uses: 'sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad' # ratchet:sigstore/cosign-installer@v4.0.0
+      uses: 'sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22' # ratchet:sigstore/cosign-installer@v4.1.0
       with:
-        cosign-release: 'v3.0.4'
+        cosign-release: 'v3.0.5'
 
     # Check if the 'sbom' input is provided, and output a message if it is empty
-    - name: "Check SBOM input"
+    - name: "Validate SBOM input"
       env:
         SBOM: ${{ inputs.sbom }}
       shell: 'bash'
       run: |
         sbom="${SBOM}"
-        if [ -z $sbom ]; then
+        if [ -z "$sbom" ]; then
           echo "SBOM input is empty. Please provide a valid SBOM for attestation."
+          exit 1
+        elif [[ ! $sbom =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+          echo "Invalid SBOM filename or path: $sbom"
+          exit 1
         else
-          echo "SBOM input is provided: $sbom"
+          echo "SBOM input is provided and valid: $sbom"
         fi
 
     - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # ratchet:oras-project/setup-oras@v1
@@ -60,7 +64,7 @@ runs:
         TRIVY_JAVA_DB_DIGEST=$(oras manifest fetch europe-north1-docker.pkg.dev/nais-io/remote-ghcr/aquasecurity/trivy-java-db:1 | jq -r '.layers[0].digest')
         echo "TRIVY_JAVA_DB_DIGEST=$TRIVY_JAVA_DB_DIGEST" >> $GITHUB_OUTPUT
 
-    - uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # ratchet:actions/cache@v4
+    - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # ratchet:actions/cache@v5
       id: cache-trivy-java-db
       with:
         path: .trivy
@@ -68,7 +72,7 @@ runs:
 
     - name: 'Generate SBOM'
       if: inputs.sbom == 'auto-generate-for-me-please.json'
-      uses: 'aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8' # ratchet:aquasecurity/trivy-action@0.33.1
+      uses: 'aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1' # ratchet:aquasecurity/trivy-action@0.35.0
       env:
         TRIVY_SKIP_DB_UPDATE: "true"
         TRIVY_JAVA_DB_REPOSITORY: "${{ inputs.trivy_java_db_repositories }}"
@@ -79,7 +83,7 @@ runs:
         image-ref: "${{ inputs.image_ref }}"
         cache-dir: ".trivy"
         # Pin version to avoid unexpected issues with new releases
-        version: "v0.68.2"
+        version: "v0.69.3"
 
         # See https://github.com/yogeshlonkar/trivy-cache-action?tab=readme-ov-file#trivy-cache-action-
     - name: Fix .trivy permissions
@@ -120,19 +124,18 @@ runs:
           sbom="${{ inputs.sbom }}"
         fi
 
-        echo "Using SBOM file: $sbom"
-        jq '.components | length' "$sbom"
-        
+        echo "Using SBOM file: $sbom" 
+
         cosign version
         cosign sign --yes "${image_ref}"
-        cosign attest --yes --predicate "$sbom" --type cyclonedx "${image_ref}"
-        
+        cosign attest --yes --predicate "$sbom" --type cyclonedx  "${image_ref}"
+
 
     - name: Set outputs
       env:
         SBOM: ${{ inputs.sbom }}
       shell: bash
       id: set-outputs
-      run: |-
+      run: |
         sbom="${SBOM}"
         echo "SBOM=$sbom" >> $GITHUB_OUTPUT
