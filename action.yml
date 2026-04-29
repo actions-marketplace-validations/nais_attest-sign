@@ -33,7 +33,7 @@ runs:
         fi
       shell: 'bash'
     - name: 'Install cosign'
-      uses: 'sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22' # ratchet:sigstore/cosign-installer@v4.1.0
+      uses: 'sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003' # ratchet:sigstore/cosign-installer@v4.1.1
       with:
         cosign-release: 'v3.0.5'
 
@@ -54,7 +54,7 @@ runs:
           echo "SBOM input is provided and valid: $sbom"
         fi
 
-    - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # ratchet:oras-project/setup-oras@v1
+    - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # ratchet:oras-project/setup-oras@v2.0.0
       name: Setup ORAS for manifest fetch
 
     - name: Fetch Trivy Java DB digest
@@ -64,7 +64,7 @@ runs:
         TRIVY_JAVA_DB_DIGEST=$(oras manifest fetch europe-north1-docker.pkg.dev/nais-io/remote-ghcr/aquasecurity/trivy-java-db:1 | jq -r '.layers[0].digest')
         echo "TRIVY_JAVA_DB_DIGEST=$TRIVY_JAVA_DB_DIGEST" >> $GITHUB_OUTPUT
 
-    - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # ratchet:actions/cache@v5
+    - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # ratchet:actions/cache@v5
       id: cache-trivy-java-db
       with:
         path: .trivy
@@ -72,7 +72,7 @@ runs:
 
     - name: 'Generate SBOM'
       if: inputs.sbom == 'auto-generate-for-me-please.json'
-      uses: 'aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1' # ratchet:aquasecurity/trivy-action@0.35.0
+      uses: 'aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25' # ratchet:aquasecurity/trivy-action@0.36.0
       env:
         TRIVY_SKIP_DB_UPDATE: "true"
         TRIVY_JAVA_DB_REPOSITORY: "${{ inputs.trivy_java_db_repositories }}"
