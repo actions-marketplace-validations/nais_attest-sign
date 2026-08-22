@@ -12,6 +12,9 @@ inputs:
   sbom:
     description: 'existing SBOM in cyclonedx format'
     default: 'auto-generate-for-me-please.json'
+  additional_sboms:
+    description: 'newline-separated list of extra CycloneDX SBOM files to merge with the primary SBOM'
+    default: ''
   trivy_java_db_repositories:
     description: 'specify the --java-db-repository strings for Trivy'
     default: "europe-north1-docker.pkg.dev/nais-io/github-ptc/aquasecurity/trivy-java-db:1,public.ecr.aws/aquasecurity/trivy-java-db,ghcr.io/aquasecurity/trivy-java-db:1"
@@ -33,9 +36,9 @@ runs:
         fi
       shell: 'bash'
     - name: 'Install cosign'
-      uses: 'sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22' # ratchet:sigstore/cosign-installer@v4.1.0
+      uses: 'sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6' # ratchet:sigstore/cosign-installer@v4.1.2
       with:
-        cosign-release: 'v3.0.5'
+        cosign-release: 'v3.0.6'
 
     # Check if the 'sbom' input is provided, and output a message if it is empty
     - name: "Validate SBOM input"
@@ -47,14 +50,32 @@ runs:
         if [ -z "$sbom" ]; then
           echo "SBOM input is empty. Please provide a valid SBOM for attestation."
           exit 1
-        elif [[ ! $sbom =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-          echo "Invalid SBOM filename or path: $sbom"
+        elif [ "$sbom" != "auto-generate-for-me-please.json" ] && [ ! -f "$sbom" ]; then
+          echo "SBOM file does not exist: $sbom"
           exit 1
         else
           echo "SBOM input is provided and valid: $sbom"
         fi
 
-    - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # ratchet:oras-project/setup-oras@v1
+    - name: 'Validate additional SBOM inputs'
+      env:
+        ADDITIONAL_SBOMS: ${{ inputs.additional_sboms }}
+      shell: 'bash'
+      run: |
+        while IFS= read -r sbom; do
+          [ -z "$sbom" ] && continue
+
+          if [ ! -f "$sbom" ]; then
+            echo "SBOM file does not exist: $sbom"
+            exit 1
+          fi
+
+          echo "Additional SBOM input is provided and valid: $sbom"
+        done <<EOF
+        ${ADDITIONAL_SBOMS}
+        EOF
+
+    - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # ratchet:oras-project/setup-oras@v2.0.1
       name: Setup ORAS for manifest fetch
 
     - name: Fetch Trivy Java DB digest
@@ -64,7 +85,7 @@ runs:
         TRIVY_JAVA_DB_DIGEST=$(oras manifest fetch europe-north1-docker.pkg.dev/nais-io/remote-ghcr/aquasecurity/trivy-java-db:1 | jq -r '.layers[0].digest')
         echo "TRIVY_JAVA_DB_DIGEST=$TRIVY_JAVA_DB_DIGEST" >> $GITHUB_OUTPUT
 
-    - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # ratchet:actions/cache@v5
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # ratchet:actions/cache@v5
       id: cache-trivy-java-db
       with:
         path: .trivy
@@ -72,7 +93,7 @@ runs:
 
     - name: 'Generate SBOM'
       if: inputs.sbom == 'auto-generate-for-me-please.json'
-      uses: 'aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1' # ratchet:aquasecurity/trivy-action@0.35.0
+      uses: 'aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25' # ratchet:aquasecurity/trivy-action@v0.36.0
       env:
         TRIVY_SKIP_DB_UPDATE: "true"
         TRIVY_JAVA_DB_REPOSITORY: "${{ inputs.trivy_java_db_repositories }}"
@@ -83,7 +104,7 @@ runs:
         image-ref: "${{ inputs.image_ref }}"
         cache-dir: ".trivy"
         # Pin version to avoid unexpected issues with new releases
-        version: "v0.69.3"
+        version: "v0.70.0"
 
         # See https://github.com/yogeshlonkar/trivy-cache-action?tab=readme-ov-file#trivy-cache-action-
     - name: Fix .trivy permissions
@@ -95,47 +116,120 @@ runs:
           echo ".trivy directory does not exist, skipping chown."
         fi
 
+    - name: Install cyclonedx-cli
+      if: inputs.additional_sboms != ''
+      shell: 'bash'
+      run: |
+        set -e
+
+        version='v0.32.0'
+        download_url="https://github.com/CycloneDX/cyclonedx-cli/releases/download/${version}/cyclonedx-linux-x64"
+        expected_sha='454879e6a4a405c8a13bff49b8982adcb0596f3019b26b0811c66e4d7f0783e1'
+
+        curl -fsSL "$download_url" -o cyclonedx
+        echo "$expected_sha  cyclonedx" | sha256sum --check --status
+        chmod +x cyclonedx
+        sudo mv cyclonedx /usr/local/bin/cyclonedx
+
+    - name: Prepare final SBOM
+      id: prepare-sbom
+      env:
+        SBOM: ${{ inputs.sbom }}
+        ADDITIONAL_SBOMS: ${{ inputs.additional_sboms }}
+      shell: 'bash'
+      run: |
+        set -e
+
+        if [ "$SBOM" = "auto-generate-for-me-please.json" ]; then
+          primary_sbom='auto-generate-for-me-please.json'
+        else
+          primary_sbom="$SBOM"
+        fi
+
+        final_sbom="$primary_sbom"
+        sboms=("$primary_sbom")
+
+        while IFS= read -r sbom; do
+          [ -z "$sbom" ] && continue
+          sboms+=("$sbom")
+        done <<EOF
+        ${ADDITIONAL_SBOMS}
+        EOF
+
+        if [ "${#sboms[@]}" -gt 1 ]; then
+          merged_sbom="$(mktemp "${RUNNER_TEMP}/merged-sbom.XXXXXX.json")"
+          cyclonedx merge --input-files "${sboms[@]}" --output-file "$merged_sbom" --output-format json --output-version v1_6
+          final_sbom="$merged_sbom"
+        fi
+
+        {
+          echo 'final_sbom<<EOF'
+          printf '%s\n' "$final_sbom"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
     - name: Debug SBOM summary
-      if: inputs.sbom == 'auto-generate-for-me-please.json'
+      env:
+        FINAL_SBOM: ${{ steps.prepare-sbom.outputs.final_sbom }}
       shell: bash
       run: |
+        sbom="${FINAL_SBOM}"
+
         echo "=== SBOM file info ==="
-        ls -lh auto-generate-for-me-please.json
+        ls -lh "$sbom"
 
         echo "=== CycloneDX metadata ==="
-        jq '{bomFormat, specVersion, metadata: {timestamp, tools}}' auto-generate-for-me-please.json
+        jq '{bomFormat, specVersion, metadata: {timestamp, tools}}' "$sbom"
 
         echo "=== Component count ==="
-        jq '.components | length' auto-generate-for-me-please.json
+        jq '.components | length' "$sbom"
 
         echo "=== First 2 components ==="
-        jq '.components[:2]' auto-generate-for-me-please.json
+        jq '.components[:2]' "$sbom"
 
     - name: 'Sign and attest image'
       env:
         IMAGE_REF: ${{ inputs.image_ref }}
+        FINAL_SBOM: ${{ steps.prepare-sbom.outputs.final_sbom }}
       shell: 'bash'
       run: |
         image_ref="${IMAGE_REF}"
 
-        if [ "${{ inputs.sbom }}" = "auto-generate-for-me-please.json" ]; then
-          sbom="auto-generate-for-me-please.json"
-        else
-          sbom="${{ inputs.sbom }}"
-        fi
+        sbom="${FINAL_SBOM}"
 
-        echo "Using SBOM file: $sbom" 
+        echo "Using SBOM file: $sbom"
 
         cosign version
-        cosign sign --yes "${image_ref}"
-        cosign attest --yes --predicate "$sbom" --type cyclonedx  "${image_ref}"
+
+        retry() {
+          local -r max_attempts=3
+          local attempt=1
+          local delay=5
+          until "$@"; do
+            if (( attempt >= max_attempts )); then
+              echo "cosign failed after ${max_attempts} attempts: $*" >&2
+              return 1
+            fi
+            echo "cosign failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..." >&2
+            sleep "$delay"
+            attempt=$(( attempt + 1 ))
+            delay=$(( delay * 3 ))
+          done
+        }
+
+        retry cosign sign --yes "${image_ref}" \
+          && retry cosign attest --yes --predicate "$sbom" --type cyclonedx "${image_ref}"
 
 
     - name: Set outputs
       env:
-        SBOM: ${{ inputs.sbom }}
+        FINAL_SBOM: ${{ steps.prepare-sbom.outputs.final_sbom }}
       shell: bash
       id: set-outputs
       run: |
-        sbom="${SBOM}"
-        echo "SBOM=$sbom" >> $GITHUB_OUTPUT
+        sbom="${FINAL_SBOM}"
+        {
+          echo 'SBOM<<EOF'
+          printf '%s\n' "$sbom"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
